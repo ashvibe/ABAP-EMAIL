@@ -1,0 +1,244 @@
+REPORT  ZMM_R_TEST_MAIL.
+
+INCLUDE ZINO_I_TEST_MAIL_TOP.
+INCLUDE ZINO_I_TEST_MAIL_FRM.
+
+
+START-OF-SELECTION.
+
+PERFORM get_data.
+PERFORM send_mail.
+
+
+TYPES: BEGIN OF ty_specialpick,
+      lifnr TYPE lifnr,
+      matnr TYPE matnr,
+      aedat TYPE ekko-aedat,
+      ebeln TYPE ekko-ebeln,
+      banfn TYPE ekpo-banfn,
+      bnfpo TYPE ekpo-bnfpo,
+      secondmail  TYPE adr6-smtp_addr,
+      mail   TYPE adr6-smtp_addr,
+      specialpick TYPE eban-zspecialpick,
+  END OF ty_specialpick.
+
+DATA: go_gbt TYPE REF TO cl_gbt_multirelated_service,
+      go_bcs TYPE REF TO cl_bcs,
+      go_doc_bcs TYPE REF TO cl_document_bcs,
+      go_recipient1 TYPE REF TO if_recipient_bcs,
+      lt_soli TYPE TABLE OF soli,
+      ls_soli TYPE soli,
+      lv_status TYPE bcs_rqst,
+      lv_content TYPE string,
+      lv_lines   TYPE i,
+      lt_eban TYPE TABLE OF eban,
+      ls_eban TYPE eban,
+      lv_lifnr TYPE lifnr,
+      lt_specialpick  TYPE TABLE OF ty_specialpick,
+      lt_specialpick_uniq  TYPE TABLE OF ty_specialpick,
+      ls_specialpick  TYPE ty_specialpick,
+      ls_specialpick_uniq   TYPE ty_specialpick,
+      lt_email TYPE TABLE OF ze_mail,
+      ls_email TYPE ze_mail,
+      lv_yesterday TYPE ekko-aedat,
+      lt_lifnr TYPE TABLE OF ty_specialpick,
+      ls_lifnr TYPE lifnr,
+      lt_mail_content TYPE TABLE OF string,
+      ls_mail_content TYPE string.
+
+DATA:
+        lv_yesterday_fmt TYPE string,
+        lv_year          TYPE char4,
+        lv_month         TYPE char2,
+        lv_day           TYPE char2.
+
+
+lv_yesterday = sy-datum - 1.
+" Yıl, ay ve günü parçalara ayır
+lv_year  = lv_yesterday(4).   " İlk 4 karakter YIL
+lv_month = lv_yesterday+4(2). " 5. ve 6. karakter AY
+lv_day   = lv_yesterday+6(2). " 7. ve 8. karakter GÜN
+
+" DD.MM.YYYY formatına çevir
+CONCATENATE lv_day lv_month lv_year INTO lv_yesterday_fmt SEPARATED BY '.'.
+FORM GET_DATA .
+
+  SELECT ekko~lifnr ekpo~ebeln eban~banfn eban~bnfpo ekpo~ebelp eban~matnr
+    FROM ekko
+    INNER JOIN ekpo ON ekko~ebeln = ekpo~ebeln
+    INNER JOIN eban ON eban~banfn = ekpo~banfn
+                     AND eban~bnfpo = ekpo~bnfpo
+    INTO CORRESPONDING FIELDS OF TABLE lt_specialpick
+    WHERE  eban~spex = 'X'
+      AND ekko~aedat = lv_yesterday
+      AND ekko~lifnr IS NOT NULL.
+
+  IF lt_specialpick[] IS NOT INITIAL.
+    DATA: BEGIN OF s_table,
+      lifnr TYPE ekko-lifnr,
+      banfn TYPE eban-banfn,
+      END OF s_table,
+      t_table LIKE TABLE OF s_table.
+
+    SELECT DISTINCT ekko~lifnr eban~banfn
+INTO CORRESPONDING FIELDS OF TABLE t_table
+FROM eban
+INNER JOIN ekpo ON ekpo~banfn = eban~banfn
+INNER JOIN ekko ON ekko~ebeln = ekpo~ebeln
+  FOR ALL ENTRIES IN lt_specialpick
+WHERE eban~banfn = lt_specialpick-banfn. "BANFN için LIFNR getir
+    IF sy-subrc <> 0.
+      MESSAGE 'ERROR: Missing data found (BANFN, BNFPO or MATNR empty)' TYPE 'E'.
+      STOP. " Programı durdurur
+    ENDIF.
+
+
+    SELECT secondmail mail lifnr
+   FROM ze_mail
+   INTO CORRESPONDING FIELDS OF TABLE lt_email
+     FOR ALL ENTRIES IN lt_specialpick
+   WHERE lifnr = lt_specialpick-lifnr.
+  ENDIF.
+
+  CREATE OBJECT go_gbt.
+
+  LOOP AT lt_specialpick INTO ls_specialpick.
+    CLEAR: ls_email.
+
+    " Satıcının LT_email tablosunda olup olmadığını kontrol et
+    READ TABLE lt_email INTO ls_email WITH KEY lifnr = ls_specialpick-lifnr BINARY SEARCH.
+
+    IF sy-subrc = 0. " LIFNR bulundu
+      ls_specialpick-mail  = ls_email-mail.
+      ls_specialpick-secondmail = ls_email-secondmail.
+    ELSE.
+      ls_specialpick-mail  = ''.
+      ls_specialpick-secondmail = ''.
+    ENDIF.
+
+    MODIFY lt_specialpick FROM ls_specialpick TRANSPORTING mail secondmail.
+  ENDLOOP.
+
+
+ENDFORM.                    " GET_DATA
+
+&---------------------------------------------------------------------
+*&      Form  SEND_MAIL
+&---------------------------------------------------------------------
+*       text
+----------------------------------------------------------------------
+*  -->  p1        text
+*  <--  p2        text
+----------------------------------------------------------------------
+FORM SEND_MAIL .
+lv_content = '<!DOCTYPE html>                                                                                        '
+               && '<html>                                                                                              '
+               && '<head>                                                                                              '
+               && '    <meta charset="UTF-8">                                                                          '
+               && '    <title>Email Template</title>                                                                    '
+               && '    <style>                                                                                         '
+               && '        body { font-family: Arial, sans-serif; background-color: #f4f4f4; padding: 20px; }          '
+               && '        .container { width: 600px; background-color: #ffffff; padding: 20px;                        '
+               && '                     border-radius: 10px; box-shadow: 0 0 10px rgba(0,0,0,0.1);                     '
+               && '                     margin: auto; padding: 20px; }                                                 '
+               && '        h2 { color: #333; text-align: center; }                                                     '
+               && '        p { color: #777; text-align: left; }                                                        ' "Aligned to the left"
+               && '        table { width: 100%; border-collapse: collapse; margin-top: 20px; }                         '
+               && '        th, td { border: 1px solid #ddd; padding: 10px; text-align: center; }                       '
+               && '        th { background-color: #f2f2f2; color: #333; }                                              '
+               && '    </style>                                                                                        '
+               && '</head>                                                                                             '
+               && '<body>                                                                                              '
+               && '    <div class="container">                                                                         '
+               && '        <h2>Specialpick Statused SAS</h2>                                                           '
+               && '        <p>Purchase Requests Requiring SPECIAL STATUS That Turned into Purchase Orders</p>            '
+               && '        <p>Hello,</p>                                                                                '
+               && '        <p>The following Purchase Requests                                                          '
+               && lv_yesterday_fmt
+               && ' have been converted into Purchase Orders on the specified date.                                    '
+               && 'SPECIAL STATUS IS REQUIRED. Please review them.</p>                                                  '
+               && '        <table>                                                                                     '
+               && '            <tr>                                                                                    '
+               && '                <th>PURCHASE REQUEST</th>                                                            '
+               && '                <th>PURCHASE ORDER</th>                                                             '
+               && '                <th>MATERIAL</th>                                                                   '
+               && '            </tr>                                                                                   '.
+
+  LOOP AT lt_specialpick INTO ls_specialpick.
+    lv_content = lv_content
+               && '            <tr>                                                                                    '
+               && '                <td>' && ls_specialpick-banfn && '</td>                                             '
+               && '                <td>' && ls_specialpick-ebeln && '</td>                                             '
+               && '                <td>' && ls_specialpick-matnr && '</td>                                             '
+               && '            </tr>                                                                                   '.
+  ENDLOOP.
+
+  lv_content = lv_content
+               && '        </table>                                                                                    '
+               && '        <p>Best regards.</p>                                                                       '
+               && '    </div>                                                                                          '
+               && '</body>                                                                                             '
+               && '</html>                                                                                             '.
+  .
+  lt_soli = cl_document_bcs=>string_to_soli( lv_content ).
+
+  CALL METHOD go_gbt->set_main_html
+    EXPORTING
+      content = lt_soli.
+
+  go_doc_bcs = cl_document_bcs=>create_from_multirelated(
+                  i_subject          = 'Specialpick PO'
+                  i_multirel_service = go_gbt ).
+
+  DATA: r_mail TYPE RANGE OF adr6-smtp_addr WITH HEADER LINE .
+
+
+  IF ls_specialpick-mail IS NOT INITIAL AND ls_specialpick-secondmail IS NOT INITIAL.
+    r_mail = 'IEQ'.
+    r_mail-low = ls_specialpick-mail.
+    APPEND r_mail.
+    r_mail = 'IEQ'.
+    r_mail-low = ls_specialpick-secondmail.
+    APPEND r_mail.
+  ELSE.
+    r_mail = 'IEQ'.
+    r_mail-low = 'firstmail@.com'.
+    APPEND r_mail.
+  ENDIF.
+
+  r_mail = 'IEQ'.
+  r_mail-low = 'ccmail@test.com'.
+  APPEND r_mail.
+
+  go_bcs = cl_bcs=>create_persistent( ).
+  go_bcs->set_document( i_document = go_doc_bcs ).
+
+  LOOP AT r_mail .
+    go_recipient1 = cl_cam_address_bcs=>create_internet_address( i_address_string = r_mail-low ).
+    IF r_mail-low = 'ccmail@test.com'.
+      DATA: i_copy TYPE flag.
+      i_copy = 'X'.
+    ELSE.
+      i_copy = ''.
+
+    ENDIF.
+    go_bcs->add_recipient( i_recipient = go_recipient1 i_copy = i_copy ).
+  ENDLOOP.
+
+  lv_status = 'N'.
+
+  CALL METHOD go_bcs->set_status_attributes
+    EXPORTING
+      i_requested_status = lv_status.
+
+
+  DATA: lx_bcs TYPE REF TO cx_bcs.
+
+  TRY.
+      go_bcs->send( ).
+      COMMIT WORK.
+      MESSAGE 'Shipping Successful' TYPE 'S'.
+    CATCH cx_bcs INTO lx_bcs.
+      ROLLBACK WORK.
+  ENDTRY.
+ENDFORM.                    " SEND_MAIL
